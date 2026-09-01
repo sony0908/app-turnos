@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Distribucion tarde 17:00-20:00</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo } = React;
+
+// ---------- Data ----------
+
+const BASE_PEOPLE = [
+{ id: "tmt1", code: "TMT1", name: "Alan", role: "TMT" },
+{ id: "tmt2", code: "TMT2", name: "Synthia", role: "TMT" },
+{ id: "tmt3", code: "TMT3", name: "Alex", role: "TMT" },
+{ id: "tmt4", code: "TMT4", name: "Miguel L", role: "TMT" },
+{ id: "tmt5", code: "TMT5", name: "Renato", role: "TMT" },
+{ id: "tmt6", code: "TMT6", name: "Cristian", role: "TMT" },
+{ id: "tpt1", code: "TPT1", name: "Pablo B", role: "TPT" },
+{ id: "tpt2", code: "TPT2", name: "Naty", role: "TPT" },
+{ id: "tpt3", code: "TPT3", name: "Andrés", role: "TPT" },
+{ id: "tpt4", code: "TPT4", name: "Anahis", role: "TPT" },
+{ id: "tpt5", code: "TPT5", name: "Erick", role: "TPT" },
+{ id: "tpt6", code: "TPT6", name: "Romina", role: "TPT" },
+{ id: "auxt1", code: "AuxT", name: "Franco", role: "AuxT" },
+];
+
+const ROLE_ORDER = { TMT: 0, TPT: 1, AuxT: 2 };
+
+const AM_OPTIONS = [
+{ key: "TC1", label: "TC 1", cat: "mental" },
+{ key: "TC2", label: "TC 2", cat: "mental" },
+{ key: "Rx3", label: "Rx 3 - Ambulatoria", cat: "variable" },
+{ key: "Rx4", label: "Rx 4 - Polichoque", cat: "variable" },
+{ key: "Rx5", label: "Rx 5 - Urgencia/Hosp", cat: "variable" },
+{ key: "Portatil", label: "Portátil", cat: "physical" },
+{ key: "Pab1", label: "Pabellón 1", cat: "physical", tmtOnly: true },
+{ key: "Pab2", label: "Pabellón 2", cat: "physical", tmtOnly: true },
+{ key: "Pab3", label: "Pabellón 3", cat: "physical", tmtOnly: true },
+{ key: "Pab4", label: "Pabellón 4", cat: "physical", tmtOnly: true },
+{ key: "Pab5", label: "Pabellón 5", cat: "physical", tmtOnly: true },
+{ key: "Pab6", label: "Pabellón 6", cat: "physical", tmtOnly: true },
+{ key: "Thalamus1", label: "Thalamus 1", cat: "light" },
+{ key: "Thalamus2", label: "Thalamus 2", cat: "light" },
+{ key: "ApoyoFin", label: "Apoyo TAC finalizacion", cat: "light" },
+{ key: "Auxiliar", label: "Auxiliar", cat: "light" },
+{ key: "Otro", label: "Otro / Libre", cat: "light" },
+];
+const AM_MAP = Object.fromEntries(AM_OPTIONS.map((o) => [o.key, o]));
+
+const PM_POSTS = [
+{ key: "TC1", label: "TC 1", cat: "mental" },
+{ key: "TC2", label: "TC 2", cat: "mental" },
+{ key: "RX", label: "RX (sala general)", cat: "variable" },
+{ key: "Portatil", label: "RX Portátil", cat: "physical", tmOnly: true },
+{ key: "Pabellon", label: "RX Pabellón", cat: "physical", tmOnly: true },
+{ key: "Thalamus", label: "RX Thalamus", cat: "light", tmOnly: true },
+{ key: "ApoyoFin", label: "Apoyo finalizacion", cat: "light" },
+];
+const PM_MAP = Object.fromEntries(PM_POSTS.map((p) => [p.key, p]));
+
+function todayKey() {
+return new Date().toISOString().slice(0, 10);
+}
+
+function amOptionsForRole(role) {
+return AM_OPTIONS.filter((o) => !o.tmtOnly || role === "TMT");
+}
+
+function pmOptionsForPerson(p) {
+if (p.id === "tpt5") return PM_POSTS.filter((post) => post.key === "RX");
+if (p.role === "TMT") return PM_POSTS;
+return PM_POSTS.filter((post) => !post.tmOnly);
+}
+
+const CAT_LABEL = { mental: "Mental", physical: "Física", variable: "Variable", light: "Liviana" };
+const CAT_COLOR = {
+mental: "#6366F1",
+physical: "#E11D48",
+variable: "#D97706",
+light: "#059669",
+};
+
+function costForCat(amCat, targetCat) {
+let cost = 0;
+if (amCat === targetCat) cost += amCat === "mental" || amCat === "physical" ? 12 : 3;
+if (amCat === "mental" && targetCat === "variable") cost -= 4;
+if (amCat === "mental" && targetCat === "physical") cost -= 3;
+if (amCat === "physical" && targetCat === "light") cost -= 5;
+if (amCat === "physical" && targetCat === "mental") cost -= 2;
+if (amCat === "light") cost -= 1;
+return cost;
+}
+
+function pickBest(pool, targetCat, amCatFn) {
+return [...pool].sort((a, b) => costForCat(amCatFn(a.id), targetCat) - costForCat(amCatFn(b.id), targetCat))[0];
+}
+
+function assignTcSplit(peopleArr, amCatFn, result) {
+const sorted = [...peopleArr].sort(
+(a, b) => costForCat(amCatFn(a.id), "mental") - costForCat(amCatFn(b.id), "mental")
+);
+sorted.forEach((p, i) => {
+result[p.id] = i % 2 === 0 ? "TC1" : "TC2";
+});
+}
+
+function suggestDistribution(allPeople, amPost, alanAusente, auxLocation) {
+const result = {};
+const amCat = (id) => {
+const k = amPost[id];
+return k && AM_MAP[k] ? AM_MAP[k].cat : "light";
+};
+
+let tmPool = allPeople.filter((p) => p.role === "TMT");
+
+let thalamusPerson = null;
+if (!alanAusente) thalamusPerson = tmPool.find((p) => p.id === "tmt1") || null;
+if (!thalamusPerson) {
+thalamusPerson = [...tmPool].sort(
+(a, b) => (amCat(b.id) === "mental" || amCat(b.id) === "physical" ? 1 : 0) -
+(amCat(a.id) === "mental" || amCat(a.id) === "physical" ? 1 : 0)
+)[0];
+}
+result[thalamusPerson.id] = "Thalamus";
+tmPool = tmPool.filter((p) => p.id !== thalamusPerson.id);
+
+const pabellonPerson = pickBest(tmPool, "physical", amCat);
+result[pabellonPerson.id] = "Pabellon";
+tmPool = tmPool.filter((p) => p.id !== pabellonPerson.id);
+
+const portatilPerson = pickBest(tmPool, "physical", amCat);
+result[portatilPerson.id] = "Portatil";
+tmPool = tmPool.filter((p) => p.id !== portatilPerson.id);
+
+for (let i = 0; i < 2; i++) {
+const rxPerson = pickBest(tmPool, "variable", amCat);
+result[rxPerson.id] = "RX";
+tmPool = tmPool.filter((p) => p.id !== rxPerson.id);
+}
+
+assignTcSplit(tmPool, amCat, result);
+
+const erick = allPeople.find((p) => p.id === "tpt5");
+if (erick) result[erick.id] = "RX";
+const auxt = allPeople.find((p) => p.role === "AuxT");
+const restTpt = allPeople.filter((p) => p.role === "TPT" && p.id !== "tpt5");
+
+if (auxLocation === "RX") {
+if (auxt) result[auxt.id] = "RX";
+const sorted = [...restTpt].sort(
+(a, b) => costForCat(amCat(a.id), "variable") - costForCat(amCat(b.id), "variable")
+);
+const rxExtra = sorted[0];
+if (rxExtra) result[rxExtra.id] = "RX";
+const tcPeople = restTpt.filter((p) => !rxExtra || p.id !== rxExtra.id);
+assignTcSplit(tcPeople, amCat, result);
+} else {
+const sorted = [...restTpt].sort(
+(a, b) => costForCat(amCat(a.id), "mental") - costForCat(amCat(b.id), "mental")
+);
+const tcExtra = sorted.slice(0, 3);
+const rxExtra = sorted.slice(3);
+const tcPeople = auxt ? [auxt, ...tcExtra] : tcExtra;
+assignTcSplit(tcPeople, amCat, result);
+rxExtra.forEach((p) => (result[p.id] = "RX"));
+}
+
+return result;
+}
+
+// ---------- IA (Gemini vía Vercel) ----------
+
+// 1. Limpieza y normalización del texto de la IA
+function cleanOcrText(text) {
+return text
+.toUpperCase()
+.replace(/[OÓ]/g, '0')
+.replace(/[1LÍI]/g, '1')
+.replace(/[5S]/g, '5')
+.replace(/[2Z]/g, '2')
+.replace(/[6G]/g, '6')
+.replace(/[8B]/g, '8')
+.replace(/[\/\\|]/g, '')
+.trim();
+}
+
+// 2. Patrones para puestos
+const OCR_KEY_PATTERNS = [
+{ key: "TC1", re: /\bTC\s*1\b/ },
+{ key: "TC2", re: /\bTC\s*2\b/ },
+{ key: "Rx3", re: /\bRX\s*3\b|AMBULATORIA/ },
+{ key: "Rx4", re: /\bRX\s*4\b|POLICHOQUE/ },
+{ key: "Rx5", re: /\bRX\s*5\b|URGENCIA|HOSP/ },
+{ key: "Portatil", re: /PORT[AÁ]TIL/ },
+{ key: "Pab1", re: /\bPAB[EÉ]?LL[OÓ]?N?\s*1\b/ },
+{ key: "Pab2", re: /\bPAB[EÉ]?LL[OÓ]?N?\s*2\b/ },
+{ key: "Pab3", re: /\bPAB[EÉ]?LL[OÓ]?N?\s*3\b/ },
+{ key: "Pab4", re: /\bPAB[EÉ]?LL[OÓ]?N?\s*4\b/ },
+{ key: "Pab5", re: /\bPAB[EÉ]?LL[OÓ]?N?\s*5\b/ },
+{ key: "Pab6", re: /\bPAB[EÉ]?LL[OÓ]?N?\s*6\b/ },
+{ key: "Thalamus1", re: /\bTHALAMUS\s*1\b/ },
+{ key: "Thalamus2", re: /\bTHALAMUS\s*2\b/ },
+{ key: "ApoyoFin", re: /FINALIZACI[ÓO]N/ },
+{ key: "Auxiliar", re: /AUXILIAR/ },
+];
+
+// 3. Convertir imagen a Base64
+function fileToBase64(file) {
+return new Promise((resolve, reject) => {
+const reader = new FileReader();
+reader.readAsDataURL(file);
+reader.onload = () => resolve(reader.result);
+reader.onerror = error => reject(error);
+});
+}
+
+// ---------- UI atoms ----------
+
+function CatDot({ cat }) {
+return (
+<span
+className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle"
+style={{ backgroundColor: CAT_COLOR[cat] }}
+/>
+);
+}
+
+function RoleBadge({ role, isExternal }) {
+const colors = {
+TMT: { bg: "#DBEAFE", fg: "#1E3A8A" },
+TPT: { bg: "#FCE7F3", fg: "#9D174D" },
+AuxT: { bg: "#E2E8F0", fg: "#334155" },
+};
+const c = isExternal ? { bg: "#FEF3C7", fg: "#92400E" } : colors[role];
+return (
+<span
+className="text-[11px] font-semibold px-1.5 py-0.5 rounded"
+style={{ backgroundColor: c.bg, color: c.fg }}
+>
+{isExternal ? "EXT" : role}
+</span>
+);
+}
+
+function RuleRow({ ok, children }) {
+return (
+<div className="flex items-center gap-2 py-1">
+{ok ? (
+<span className="text-emerald-500 shrink-0">✓</span>
+) : (
+<span className="text-rose-500 shrink-0">⚠</span>
+)}
+<span className={`text-sm ${ok ? "text-slate-600" : "text-rose-700"}`}>{children}</span>
+</div>
+);
+}
+
+// ---------- Main App ----------
+
+function App() {
+const [amPost, setAmPost] = useState({});
+const [pmPost, setPmPost] = useState({});
+const [externalName, setExternalName] = useState("");
+const [alanAusente, setAlanAusente] = useState(false);
+const [auxLocation, setAuxLocation] = useState("RX");
+const [loaded, setLoaded] = useState(false);
+const [saveState, setSaveState] = useState("idle");
+const [ocrLoading, setOcrLoading] = useState(false);
+const [ocrMessage, setOcrMessage] = useState("");
+const [ocrError, setOcrError] = useState("");
+const [ocrRawText, setOcrRawText] = useState("");
+const saveTimer = useRef(null);
+
+useEffect(() => {
+try {
+const raw = localStorage.getItem("turno-pm:" + todayKey());
+if (raw) {
+const data = JSON.parse(raw);
+if (data.amPost) setAmPost(data.amPost);
+if (data.pmPost) setPmPost(data.pmPost);
+if (typeof data.externalName === "string") setExternalName(data.externalName);
+if (typeof data.alanAusente === "boolean") setAlanAusente(data.alanAusente);
+if (data.auxLocation) setAuxLocation(data.auxLocation);
+}
+} catch (e) {
+// sin datos guardados aun
+} finally {
+setLoaded(true);
+}
+}, []);
+
+useEffect(() => {
+if (!loaded) return;
+setSaveState("saving");
+if (saveTimer.current) clearTimeout(saveTimer.current);
+saveTimer.current = setTimeout(() => {
+try {
+localStorage.setItem(
+"turno-pm:" + todayKey(),
+JSON.stringify({ amPost, pmPost, externalName, alanAusente, auxLocation })
+);
+setSaveState("saved");
+} catch (e) {
+setSaveState("idle");
+}
+}, 500);
+return () => clearTimeout(saveTimer.current);
+}, [amPost, pmPost, externalName, alanAusente, auxLocation, loaded]);
+
+const allPeople = useMemo(
+() => [
+...BASE_PEOPLE,
+{
+id: "ext1",
+code: "EXT",
+name: externalName.trim() || "TM externo (sin nombre)",
+role: "TMT",
+isExternal: true,
+},
+],
+[externalName]
+);
+
+const peopleSorted = [...allPeople].sort(
+(a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || (a.isExternal ? 1 : 0) - (b.isExternal ? 1 : 0)
+);
+
+function setPersonAm(id, key) {
+setAmPost((prev) => ({ ...prev, [id]: key }));
+}
+function setPersonPm(id, key) {
+setPmPost((prev) => ({ ...prev, [id]: key }));
+}
+
+// ---------- handleImageUpload con IA (Vercel Backend) ----------
+async function handleImageUpload(e) {
+const file = e.target.files && e.target.files[0];
+if (!file) return;
+
+setOcrError("");
+setOcrMessage("");
+setOcrRawText("");
+setOcrLoading(true);
+
+try {
+const base64Image = await fileToBase64(file);
+
+
+const response = await fetch("/api/ocr", {
+method: "POST",
+headers: { "Content-Type": "application/json" },
+body: JSON.stringify({ imageBase64: base64Image })
+});
+
+const data = await response.json();
+if (data.error) throw new Error(data.error);
+
+const rawText = data.text || "";
+setOcrRawText(rawText);
+
+const cleaned = cleanOcrText(rawText);
+const lines = cleaned.split("\n").map(l => l.trim()).filter(Boolean);
+
+const validCodes = BASE_PEOPLE.map(p => p.code.toUpperCase());
+const updates = {};
+const foundCodes = new Set();
+
+lines.forEach(line => {
+const codeMatch = validCodes.find(c => new RegExp("\\b" + c + "\\b").test(line));
+if (!codeMatch) return;
+foundCodes.add(codeMatch);
+
+const postMatch = OCR_KEY_PATTERNS.find(kp => kp.re.test(line));
+if (postMatch) {
+const person = BASE_PEOPLE.find(p => p.code.toUpperCase() === codeMatch);
+if (person) updates[person.id] = postMatch.key;
+}
+});
+
+const assignedCount = Object.keys(updates).length;
+if (foundCodes.size === 0) {
+setOcrError("No se reconoció ningún código. Intenta con otra foto.");
+} else {
+setAmPost(prev => ({ ...prev, ...updates }));
+setOcrMessage(`Se detectaron ${foundCodes.size} código(s); ${assignedCount} ubicados con éxito.`);
+}
+} catch (err) {
+console.error(err);
+setOcrError("Error con la IA: " + (err.message || "desconocido"));
+} finally {
+setOcrLoading(false);
+e.target.value = "";
+}
+}
+
+function handleSuggest() {
+setPmPost(suggestDistribution(allPeople, amPost, alanAusente, auxLocation));
+}
+function handleReset() {
+setAmPost({});
+setPmPost({});
+setExternalName("");
+setAlanAusente(false);
+setAuxLocation("RX");
+}
+
+const jefeDeTurno = alanAusente ? "Alex (TMT3) - subrogante" : "Alan (TMT1)";
+
+const tmIds = new Set(allPeople.filter((p) => p.role === "TMT").map((p) => p.id));
+const apoyoIds = new Set(allPeople.filter((p) => p.role !== "TMT").map((p) => p.id));
+const countWhere = (pred) => Object.entries(pmPost).filter(([id, key]) => pred(id, key)).length;
+
+const tcTM = countWhere((id, key) => (key === "TC1" || key === "TC2") && tmIds.has(id));
+const tcApoyo = countWhere((id, key) => (key === "TC1" || key === "TC2") && apoyoIds.has(id));
+const rxTM = countWhere((id, key) => key === "RX" && tmIds.has(id));
+const rxApoyo = countWhere((id, key) => key === "RX" && apoyoIds.has(id));
+const pabellonTM = countWhere((id, key) => key === "Pabellon" && tmIds.has(id));
+const pabellonApoyo = countWhere((id, key) => key === "Pabellon" && apoyoIds.has(id));
+const portatilTM = countWhere((id, key) => key === "Portatil" && tmIds.has(id));
+const portatilApoyo = countWhere((id, key) => key === "Portatil" && apoyoIds.has(id));
+const thalamusTM = countWhere((id, key) => key === "Thalamus" && tmIds.has(id));
+
+const alanSet = alanAusente || pmPost["tmt1"] === "Thalamus";
+const erickOk = !pmPost["tpt5"] || pmPost["tpt5"] === "RX";
+
+const hasAnyPm = Object.keys(pmPost).length > 0;
+
+return (
+<div style={{ backgroundColor: "#F1F5F9", minHeight: "100vh" }} className="text-slate-800">
+<div style={{ backgroundColor: "#123C4B" }} className="px-5 py-5 text-white">
+<div className="max-w-3xl mx-auto">
+<p className="text-xs uppercase tracking-widest opacity-70 mb-1">Imagenología - Turno</p>
+<h1 className="text-xl font-semibold">Distribución tarde 17:00-20:00</h1>
+<p className="text-sm opacity-80 mt-1">
+Carga la mañana, ajusta las variables del día y sugiere el reparto de la tarde.
+</p>
+<div className="mt-3 inline-flex items-center gap-2 bg-white/10 rounded-lg px-3 py-1.5 text-sm">
+Jefe de turno: <span className="font-semibold">{jefeDeTurno}</span>
+</div>
+</div>
+</div>
+
+<div className="max-w-3xl mx-auto px-4 py-5 space-y-6">
+<section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+<div className="px-4 py-3 border-b border-slate-100 space-y-2">
+<h2 className="font-semibold text-slate-800">1. Puesto de la mañana (08:00-17:00)</h2>
+<p className="text-xs text-slate-500">
+El TM EXT ingresa a las 11:00 y sale a las 20:00. Procesamiento inteligente mediante Gemini IA en Vercel.
+</p>
+<label
+className={"inline-flex items-center gap-2 text-sm font-medium px-3 py-2 rounded-lg border border-dashed cursor-pointer " + (ocrLoading ? "opacity-60 pointer-events-none" : "")}
+style={{ borderColor: "#123C4B", color: "#123C4B" }}
+>
+{ocrLoading ? "Analizando imagen con IA..." : "Subir foto de la distribución AM"}
+<input
+type="file"
+accept="image/*"
+className="hidden"
+onChange={handleImageUpload}
+disabled={ocrLoading}
+/>
+</label>
+{ocrMessage && <p className="text-xs text-emerald-600">{ocrMessage}</p>}
+{ocrError && <p className="text-xs text-rose-600">{ocrError}</p>}
+{ocrRawText && (
+<details className="text-xs text-slate-500">
+<summary className="cursor-pointer">Ver texto reconocido por la IA</summary>
+<pre className="whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded p-2 mt-1">{ocrRawText}</pre>
+</details>
+)}
+</div>
+<div className="divide-y divide-slate-100">
+{peopleSorted.map((p) => {
+const opt = amPost[p.id] ? AM_MAP[amPost[p.id]] : null;
+return (
+<div key={p.id} className="px-4 py-2.5 flex items-center gap-3">
+<div className="w-28 shrink-0 flex flex-col gap-1">
+<div className="flex items-center gap-2">
+<RoleBadge role={p.role} isExternal={p.isExternal} />
+{!p.isExternal && <span className="text-sm font-medium truncate">{p.name}</span>}
+</div>
+{p.isExternal && (
+<input
+type="text"
+placeholder="Nombre externo"
+className="text-sm border border-slate-200 rounded-md px-1.5 py-1 w-full"
+value={externalName}
+onChange={(e) => setExternalName(e.target.value)}
+/>
+)}
+</div>
+<select
+className="flex-1 text-sm border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 focus:outline-none focus:ring-2"
+style={{ outlineColor: "#123C4B" }}
+value={amPost[p.id] || ""}
+onChange={(e) => setPersonAm(p.id, e.target.value)}
+>
+<option value="">- sin asignar -</option>
+{amOptionsForRole(p.role).map((o) => (
+<option key={o.key} value={o.key}>
+{o.label}
+</option>
+))}
+</select>
+{opt && (
+<span className="text-[11px] shrink-0 w-16 text-right text-slate-500">
+<CatDot cat={opt.cat} />
+{CAT_LABEL[opt.cat]}
+</span>
+)}
+</div>
+);
+})}
+</div>
+</section>
+
+<section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+<div className="px-4 py-3 border-b border-slate-100">
+<h2 className="font-semibold text-slate-800">2. Variables del día</h2>
+</div>
+<div className="p-4 space-y-4">
+<label className="flex items-center gap-2 text-sm">
+<input
+type="checkbox"
+checked={alanAusente}
+onChange={(e) => setAlanAusente(e.target.checked)}
+className="w-4 h-4"
+/>
+Alan (TMT1) no viene hoy - Alex (TMT3) queda como jefe de turno
+</label>
+
+<div>
+<p className="text-sm mb-1.5">Ubicación de Franco (AuxT) en la tarde:</p>
+<div className="flex gap-2">
+{["TC", "RX"].map((loc) => (
+<button
+key={loc}
+onClick={() => setAuxLocation(loc)}
+className={"text-sm px-3 py-1.5 rounded-lg border " + (auxLocation === loc ? "text-white border-transparent" : "text-slate-600 border-slate-200 bg-white")}
+style={auxLocation === loc ? { backgroundColor: "#123C4B" } : {}}
+>
+{loc === "TC" ? "TC (3 TPT + AuxT, Rx queda con 3 TPT)" : "Rx (2 TPT + AuxT, TC queda con 4 TPT)"}
+</button>
+))}
+</div>
+</div>
+</div>
+</section>
+
+<div className="flex gap-3">
+<button
+onClick={handleSuggest}
+className="flex-1 flex items-center justify-center gap-2 text-white text-sm font-semibold py-2.5 rounded-lg shadow-sm"
+style={{ backgroundColor: "#123C4B" }}
+>
+Sugerir distribución
+</button>
+<button
+onClick={handleReset}
+className="flex items-center justify-center gap-2 text-slate-600 text-sm font-medium py-2.5 px-4 rounded-lg border border-slate-200 bg-white"
+>
+Reiniciar
+</button>
+</div>
+
+<section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+<div className="px-4 py-3 border-b border-slate-100">
+<h2 className="font-semibold text-slate-800">3. Distribución de la tarde</h2>
+<p className="text-xs text-slate-500 mt-0.5">
+Puedes ajustar cada persona manualmente después de sugerir.
+</p>
+</div>
+<div className="divide-y divide-slate-100">
+{peopleSorted.map((p) => {
+const amOpt = amPost[p.id] ? AM_MAP[amPost[p.id]] : null;
+const pmKey = pmPost[p.id];
+const pmOpt = pmKey ? PM_MAP[pmKey] : null;
+const softConflict =
+amOpt && pmOpt && amOpt.cat === pmOpt.cat && (amOpt.cat === "mental" || amOpt.cat === "physical");
+const hardError =
+(pmOpt && pmOpt.tmOnly && p.role !== "TMT") ||
+(p.id === "tpt5" && pmKey && pmKey !== "RX") ||
+(p.id === "tmt1" && !alanAusente && pmKey && pmKey !== "Thalamus");
+return (
+<div key={p.id} className="px-4 py-2.5 flex items-center gap-3">
+<div className="w-28 shrink-0 flex items-center gap-2">
+<RoleBadge role={p.role} isExternal={p.isExternal} />
+<span className="text-sm font-medium truncate">{p.name}</span>
+</div>
+<select
+className="flex-1 text-sm border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 focus:outline-none focus:ring-2"
+style={{ outlineColor: "#123C4B" }}
+value={pmKey || ""}
+onChange={(e) => setPersonPm(p.id, e.target.value)}
+>
+<option value="">- sin asignar -</option>
+{pmOptionsForPerson(p).map((post) => (
+<option key={post.key} value={post.key}>
+{post.label}
+</option>
+))}
+</select>
+<div className="w-6 shrink-0 flex justify-center">
+{hardError ? (
+<span className="text-rose-500">⚠</span>
+) : softConflict ? (
+<span className="text-amber-500">⚠</span>
+) : pmOpt ? (
+<span className="text-emerald-500">✓</span>
+) : null}
+</div>
+</div>
+);
+})}
+</div>
+</section>
+
+<section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+<div className="px-4 py-3 border-b border-slate-100">
+<h2 className="font-semibold text-slate-800">Cumplimiento de reglas</h2>
+</div>
+<div className="px-4 py-2">
+<RuleRow ok={!hasAnyPm || alanSet}>
+Thalamus: TMT1 (Alan) {alanAusente ? "ausente - no aplica" : alanSet ? "asignado" : "no asignado a Thalamus"}
+</RuleRow>
+<RuleRow ok={!hasAnyPm || erickOk}>TPT5 (Erick) siempre en Rx {erickOk ? "" : "- está fuera de Rx"}</RuleRow>
+<RuleRow ok={!hasAnyPm || tcTM === 2}>TC1+TC2 - TMT/EXT: {tcTM}/2</RuleRow>
+<RuleRow ok={!hasAnyPm || tcApoyo === 4}>TC1+TC2 - TPT/AuxT: {tcApoyo}/4</RuleRow>
+<RuleRow ok={!hasAnyPm || rxTM === 2}>RX - TMT/EXT: {rxTM}/2</RuleRow>
+<RuleRow ok={!hasAnyPm || rxApoyo === 3}>RX - TPT/AuxT: {rxApoyo}/3</RuleRow>
+<RuleRow ok={!hasAnyPm || (pabellonTM === 1 && pabellonApoyo === 0)}>
+RX Pabellon - TMT/EXT: {pabellonTM}/1 (nunca TPT/AuxT)
+</RuleRow>
+<RuleRow ok={!hasAnyPm || (portatilTM === 1 && portatilApoyo === 0)}>
+RX Portatil - TMT/EXT: {portatilTM}/1 (nunca TPT/AuxT)
+</RuleRow>
+<RuleRow ok={!hasAnyPm || thalamusTM <= 1}>RX Thalamus - TMT/EXT: {thalamusTM}/1</RuleRow>
+</div>
+</section>
+
+<section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+<div className="px-4 py-3 border-b border-slate-100">
+<h2 className="font-semibold text-slate-800">Resumen por puesto</h2>
+</div>
+<div className="divide-y divide-slate-100">
+{PM_POSTS.map((post) => {
+const names = peopleSorted.filter((p) => pmPost[p.id] === post.key);
+return (
+<div key={post.key} className="px-4 py-2.5">
+<div className="flex items-center justify-between mb-1">
+<span className="text-sm font-medium flex items-center">
+<CatDot cat={post.cat} />
+{post.label}
+</span>
+<span className="text-xs font-semibold text-slate-400">{names.length}</span>
+</div>
+<p className="text-sm text-slate-600">
+{names.length ? names.map((n) => n.name).join(", ") : "- sin nadie asignado -"}
+</p>
+</div>
+);
+})}
+</div>
+</section>
+
+<div className="flex items-center gap-1.5 text-xs text-slate-400 pb-4">
+{saveState === "saving" ? "Guardando..." : "Guardado localmente para hoy"}
+</div>
+</div>
+</div>
+);
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
